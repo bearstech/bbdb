@@ -1,7 +1,7 @@
 The Bear Bash DeBugger
 ==
 
-`bbdb` uses Bash's internal debugging mechanism to provide a kind of debugger which will help you to trace and understand the execution of Bash scripts, even large and mult-files ones.
+`bbdb` uses Bash's internal debugging mechanism to provide a kind of debugger which will help you to trace and understand the execution of Bash scripts, even large and multi-files ones.
 
 The most basic invocation is `-f` to trace function entries and exits (with exit code) :
 ```
@@ -45,8 +45,6 @@ If you know what you're searching for, restrict tracing to functions or statemen
 ```
 $ bbdb -f -s initHome acme.sh >/dev/null 
 !/usr/bin/acme.sh:2919|       -> __initHome()
-!/usr/bin/acme.sh:2919|         <- 0
-!/usr/bin/acme.sh:2919|         <- 0
 !/usr/bin/acme.sh:2919|         <- 0
 !/usr/bin/acme.sh:8345E status 0
 ```
@@ -108,7 +106,8 @@ $ bbdb -a -f -t -T -w acme.sh >/dev/null
 ```
 
 
-=== Options
+Options
+---
 
 ```
 $ bbdb -h
