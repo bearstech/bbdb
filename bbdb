@@ -1,0 +1,238 @@
+#!/bin/bash
+
+# The Bear Bash DeBugger
+# 
+# This is NOT an interactive debugger, but more a low-noise tracer.
+
+# (c) 2025 Bearstech https://bearstech.com
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program. If not, see <https://www.gnu.org/licenses/>. 
+
+# Known limits :
+# - how to debug bash scripts launched from bash scripts ?
+# - how to cumulate data (statement count, script paths sourced, etc) while our
+#   debug trap run sometimes in subshells ?
+
+set -e
+
+# Options
+_bbdb_opt_args=
+declare -A _bbdb_opt_breaks=()
+_bbdb_opt_func=
+_bbdb_opt_time=
+_bbdb_opt_select=".*"
+_bbdb_opt_timer=
+_bbdb_opt_trace=
+_bbdb_opt_watch=
+_bbdb_opt_width=
+
+_bbdb_help() {
+  cat <<EOF >&2
+bbdb [OPTIONS] [--] program args ...
+
+Option :
+  -a            Show function call args
+  -b PATH:LINE  Add a breakpoint
+  -f            Trace function entry/exit
+  -h            This help
+  -s RE         Select functions/statements/vars by regex
+  -t            Show relative time (precision: ms)
+  -T            Show absolute time (precision: s)
+  -w            Watch for variable assignments
+  -W COLS       Set size for function name column
+  -x            Trace all statements
+
+EOF
+  exit 1
+}
+
+while true; do
+  case "$1" in
+    "-a") _bbdb_opt_args=y; shift;;
+    "-b") _bbdb_opt_breaks["$2"]=y; shift 2;;
+    "-f") _bbdb_opt_func=y; shift;;
+    "-h") _bbdb_help;;
+    "-s") _bbdb_opt_select="$2"; shift 2;;
+    "-t") _bbdb_opt_timer=y; shift;;
+    "-T") _bbdb_opt_time=y; shift;;
+    "-w") _bbdb_opt_watch=y; shift;;
+    "-W") _bbdb_opt_width="$2"; shift 2;;
+    "-x") _bbdb_opt_trace=y; shift;;
+    "--") shift; break;;  # Explicit end of debugger args
+    "-"*) echo "Unknown arg '$1'" >&2; exit 1;;
+    *) break;;  # First non-arg is considered to be the program to call
+  esac
+done
+if [ $# = 0 ]; then
+  echo "error: no script to debug, try 'bbdb -h' for help" >&2
+  exit 2
+fi
+
+# We need that bunch of globals
+_bbdb_stackpos=
+_bbdb_stackindent=
+_bbdb_lastsrc=
+_bbdb_lastlno=
+_bbdb_lastcmd=
+_bbdb_wd=$PWD
+_bbdb_src=${BASH_SOURCE[0]}
+_bbdb_t0=${EPOCHREALTIME/./}
+
+# User prog can intercept stderr with `eval "..." 2>...`, let's have our own undisturbed handle
+exec 99>&2
+
+_bbdb_print() {
+  local src=$1
+  local lno=$2
+  local fmt=$3
+  shift 3
+
+  # Handle configurable prefix : [abstime] [reltime]
+  local prefix=
+  local -a args=()
+  if [ -n "$_bbdb_opt_time" ]; then
+    prefix="$prefix%(%H:%M:%S)T "
+    args+=(-1)
+  fi
+  if [ -n "$_bbdb_opt_timer" ]; then
+    local t=${EPOCHREALTIME/./}
+    prefix="$prefix%6.3f "
+    args+=($((t-_bbdb_t0))"e-6")
+  fi
+
+  if [ -z "$_bbdb_opt_width" ]; then
+    # Automatically set width from first source filename
+    _bbdb_opt_width=${#src}
+  fi
+  # Enforce width, truncate if necessary
+  if [ "$_bbdb_opt_width" -lt ${#src} ]; then
+    src="…${src:1-_bbdb_opt_width}"
+  fi
+
+  printf "!$prefix%-$((_bbdb_opt_width+5))s$fmt\n" "${args[@]}" "$src:$lno" "$@" >&99
+}
+
+_bbdb_exit() {
+  local ret=$?
+
+  trap '' DEBUG
+  if [ -n "$_bbdb_opt_func" ]; then
+    _bbdb_print "$_bbdb_lastsrc" "$_bbdb_lastlno" "E status %d" "$ret"
+  fi
+}
+
+_bbdb_debug() {
+  local varname=$1
+  local varval=$2
+  local ret=$?
+
+  # This trick let us ignore the first debug trap which is the 'source prog' one
+  if [ -z "$_bbdb_stackpos" ]; then
+    _bbdb_stackpos=0
+    return 0
+  fi
+
+  # All user program calls start at stackpos 3, ignore lower ones which are in the debugger.
+  # Also ignore when program normally exits at its end (from stackpos 0).
+  local stackpos=$((${#FUNCNAME[*]}-3))
+  local funcname=${FUNCNAME[1]}
+  if [ "$stackpos" -lt 0 ] || [ "$funcname" = "_bbdb_exit" ]; then
+    return
+  fi
+
+  local src=${BASH_SOURCE[1]}
+  if [[ "$src" = "$_bbdb_wd"* ]]; then  # Don't show cwd if it's in the script's path prefix
+    local wdn=$((${#_bbdb_wd}+1))
+    src=${src:$wdn}
+  fi
+
+  if [ -n "$_bbdb_opt_func" ]; then
+    # When tracing function, we want to show the calling site, hence 1 step into the call stack
+    local lno=${BASH_LINENO[1]}
+    if [ "$src" = "$_bbdb_src" ]; then
+      src=$_bbdb_lastsrc
+      lno=$_bbdb_lastlno
+    fi
+    # We remember this for tracing the program exit
+    _bbdb_lastsrc=$src
+    _bbdb_lastlno=$lno
+ 
+    if [ "$stackpos" -gt "$_bbdb_stackpos" ]; then  # Entering a function
+      if [[ "$funcname" =~ $_bbdb_opt_select ]]; then
+        _bbdb_print "$src" "$lno" "| %s-> %s()" "$_bbdb_stackindent" "$funcname" 
+        if [ -n "$_bbdb_opt_args" ]; then
+          for ((i=BASH_ARGC[1]; i--; i>0)); do
+            _bbdb_print "$src" "$lno" "| %s-> | [%s]" "$_bbdb_stackindent" "${BASH_ARGV[$i]}" 
+          done
+        fi
+      fi
+      _bbdb_stackindent="  $_bbdb_stackindent"
+    elif [ "$stackpos" -lt "$_bbdb_stackpos" ]; then  # Leaving a function
+      _bbdb_stackindent=${_bbdb_stackindent%  }
+      if [[ "$funcname" =~ $_bbdb_opt_select ]]; then
+        _bbdb_print "$src" "$lno" "| %s<- %d" "$_bbdb_stackindent" "$ret"
+      fi
+    fi
+  fi
+
+  # For tracing and breakpoints, use the current stack frame
+  local lno=${BASH_LINENO[0]}
+  local break=${_bbdb_opt_breaks["$src:$lno"]}
+  # This heuristic figures out if we are in a Bash's spurious-function-entry trap.
+  # The idea is to detect that $BASH_COMMAND is the same twive in a row AND that it's not
+  # an explicitly repeated statement (on the same or next line of code from the same source).
+  # Ssee https://stackoverflow.com/questions/51557238/why-is-the-debug-trap-executed-more-times-than-expected)
+  if [[ "$BASH_COMMAND" != "$_bbdb_lastcmd" || (
+          "$src" = "$_bbdb_lastsrc" && ("$lno" = "$_bbdb_lastlno" || "$lno" = $((_bbdb_lastlno+1))) ) ]]; then
+    if [[ (-n "$_bbdb_opt_trace" && "$BASH_COMMAND" =~ $_bbdb_opt_select) || -n "$break" ]]; then
+      _bbdb_print "$src" "$lno" "\$ %s" "$BASH_COMMAND"
+    fi
+    if [ -n "$_bbdb_opt_watch" ] && [ -n "$varname" ] && [[ "$varname" =~ $_bbdb_opt_select ]]; then
+      _bbdb_print "$src" "$lno" "= %s \`%s\`" "$varname" "$varval"
+    fi
+  fi
+
+  _bbdb_stackpos=$stackpos
+  _bbdb_lastsrc=$src
+  _bbdb_lastlno=$lno
+  _bbdb_lastcmd=$BASH_COMMAND
+
+  if [ -n "$break" ]; then
+    echo "!<break>" >&99
+    read -r -s </dev/tty
+  fi
+}
+
+# Make sure User prog has its args in $@ and $0 as it expects
+_bbdd_prog="$1"
+shift
+BASH_ARGV0="$_bbdd_prog"
+
+set +e
+set -o functrace
+shopt -s extdebug
+trap _bbdb_exit EXIT
+# The DEBUG trap must be installed last, it captures all statements.
+# Install a simpler trap if we don't have to watch for variables assigments.
+if [ -z "$_bbdb_opt_watch" ]; then
+  trap _bbdb_debug DEBUG
+else
+  trap 'if [[ "$BASH_COMMAND" =~ ^([_a-zA-Z][_a-zA-Z0-9]*)= ]]; then
+          _bbdb_debug "${BASH_REMATCH[1]}" "${!BASH_REMATCH[1]}"
+        else
+          _bbdb_debug
+        fi' DEBUG
+fi
+
+. "$_bbdd_prog"
