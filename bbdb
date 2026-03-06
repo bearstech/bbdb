@@ -133,8 +133,8 @@ _bbdb_exit() {
 }
 
 _bbdb_debug() {
-  local varname=$1
-  local varval=$2
+  local varname=${1:-}
+  local varval=${2:-}
   local ret=$?
 
   # This trick let us ignore the first debug trap which is the 'source prog' one
@@ -188,7 +188,7 @@ _bbdb_debug() {
 
   # For tracing and breakpoints, use the current stack frame
   local lno=${BASH_LINENO[0]}
-  local break=${_bbdb_opt_breaks["$src:$lno"]}
+  local break=${_bbdb_opt_breaks["$src:$lno"]:-}
   # This heuristic figures out if we are in a Bash's spurious-function-entry trap.
   # The idea is to detect that $BASH_COMMAND is the same twive in a row AND that it's not
   # an explicitly repeated statement (on the same or next line of code from the same source).
