@@ -192,7 +192,7 @@ _bbdb_debug() {
   # This heuristic figures out if we are in a Bash's spurious-function-entry trap.
   # The idea is to detect that $BASH_COMMAND is the same twive in a row AND that it's not
   # an explicitly repeated statement (on the same or next line of code from the same source).
-  # Ssee https://stackoverflow.com/questions/51557238/why-is-the-debug-trap-executed-more-times-than-expected)
+  # See https://stackoverflow.com/questions/51557238/why-is-the-debug-trap-executed-more-times-than-expected)
   if [[ "$BASH_COMMAND" != "$_bbdb_lastcmd" || (
           "$src" = "$_bbdb_lastsrc" && ("$lno" = "$_bbdb_lastlno" || "$lno" = $((_bbdb_lastlno+1))) ) ]]; then
     if [[ (-n "$_bbdb_opt_trace" && "$BASH_COMMAND" =~ $_bbdb_opt_select) || -n "$break" ]]; then
@@ -224,7 +224,7 @@ set -o functrace
 shopt -s extdebug
 trap _bbdb_exit EXIT
 # The DEBUG trap must be installed last, it captures all statements.
-# Install a simpler trap if we don't have to watch for variables assigments.
+# Install a simpler trap if we don't have to watch for variables assignments.
 if [ -z "$_bbdb_opt_watch" ]; then
   trap _bbdb_debug DEBUG
 else
