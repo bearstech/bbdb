@@ -43,7 +43,7 @@ $ bbdb -f -a acme.sh >/dev/null
 
 If you know what you're searching for, restrict tracing to functions or statements matching a regex with `-s` :
 ```
-$ bbdb -f -s initHome acme.sh >/dev/null 
+$ bbdb -f -s initHome acme.sh >/dev/null
 !/usr/bin/acme.sh:2919|       -> __initHome()
 !/usr/bin/acme.sh:2919|         <- 0
 !/usr/bin/acme.sh:8345E status 0
@@ -125,3 +125,8 @@ Option :
   -W COLS       Set size for function name column
   -x            Trace all statements
 ```
+
+Compatability
+---
+
+Should be compatible with Bash 3.2+. Sadly Apple ships a very old version of Bash by default.

@@ -28,7 +28,7 @@ set -e
 
 # Options
 _bbdb_opt_args=
-declare -A _bbdb_opt_breaks=()
+_bbdb_opt_breaks=
 _bbdb_opt_func=
 _bbdb_opt_time=
 _bbdb_opt_select=".*"
@@ -60,7 +60,7 @@ EOF
 while true; do
   case "$1" in
     "-a") _bbdb_opt_args=y; shift;;
-    "-b") _bbdb_opt_breaks["$2"]=y; shift 2;;
+    "-b") _bbdb_opt_breaks="$_bbdb_opt_breaks$2"$'\n'; shift 2;;
     "-f") _bbdb_opt_func=y; shift;;
     "-h") _bbdb_help;;
     "-s") _bbdb_opt_select="$2"; shift 2;;
@@ -79,6 +79,18 @@ if [ $# = 0 ]; then
   exit 2
 fi
 
+# Microseconds since the epoch. $EPOCHREALTIME needs Bash 5+; on older Bash
+# (e.g. the 3.2 shipped by macOS) fall back to date(1). Returned via a global
+# to keep the fast path subshell-free.
+_bbdb_usec() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    _bbdb_usec_ret=${EPOCHREALTIME/./}
+  else
+    _bbdb_usec_ret=$(date +%s%N)
+    _bbdb_usec_ret=${_bbdb_usec_ret%???}  # nanoseconds -> microseconds
+  fi
+}
+
 # We need that bunch of globals
 _bbdb_stackpos=
 _bbdb_stackindent=
@@ -87,7 +99,14 @@ _bbdb_lastlno=
 _bbdb_lastcmd=
 _bbdb_wd=$PWD
 _bbdb_src=${BASH_SOURCE[0]}
-_bbdb_t0=${EPOCHREALTIME/./}
+_bbdb_usec; _bbdb_t0=$_bbdb_usec_ret
+
+# printf '%()T' needs Bash 4.2+; detect once so _bbdb_print can fall back to
+# date(1) on older Bash.
+_bbdb_have_strftime=
+if printf '%(%H)T' -1 >/dev/null 2>&1; then
+  _bbdb_have_strftime=y
+fi
 
 # User prog can intercept stderr with `eval "..." 2>...`, let's have our own undisturbed handle
 exec 99>&2
@@ -102,11 +121,16 @@ _bbdb_print() {
   local prefix=
   local -a args=()
   if [ -n "$_bbdb_opt_time" ]; then
-    prefix="$prefix%(%H:%M:%S)T "
-    args+=(-1)
+    if [ -n "$_bbdb_have_strftime" ]; then
+      prefix="$prefix%(%H:%M:%S)T "
+      args+=(-1)
+    else  # Bash < 4.2 has no printf %()T
+      prefix="$prefix%s "
+      args+=("$(date +%H:%M:%S)")
+    fi
   fi
   if [ -n "$_bbdb_opt_timer" ]; then
-    local t=${EPOCHREALTIME/./}
+    _bbdb_usec; local t=$_bbdb_usec_ret
     prefix="$prefix%6.3f "
     args+=($((t-_bbdb_t0))"e-6")
   fi
@@ -120,7 +144,9 @@ _bbdb_print() {
     src="…${src:1-_bbdb_opt_width}"
   fi
 
-  printf "!$prefix%-$((_bbdb_opt_width+5))s$fmt\n" "${args[@]}" "$src:$lno" "$@" >&99
+  # ${args[@]+...} guards against 'set -u' in the traced program: Bash 3.2
+  # errors on an empty array expansion, unlike Bash 4.4+.
+  printf "!$prefix%-$((_bbdb_opt_width+5))s$fmt\n" ${args[@]+"${args[@]}"} "$src:$lno" "$@" >&99
 }
 
 _bbdb_exit() {
@@ -188,7 +214,10 @@ _bbdb_debug() {
 
   # For tracing and breakpoints, use the current stack frame
   local lno=${BASH_LINENO[0]}
-  local break=${_bbdb_opt_breaks["$src:$lno"]:-}
+  # Breakpoints are a newline-delimited string (Bash 3.2 has no associative
+  # arrays); match "path:line" as a whole entry framed by newlines.
+  local break=
+  case $'\n'"$_bbdb_opt_breaks" in *$'\n'"$src:$lno"$'\n'*) break=y;; esac
   # This heuristic figures out if we are in a Bash's spurious-function-entry trap.
   # The idea is to detect that $BASH_COMMAND is the same twive in a row AND that it's not
   # an explicitly repeated statement (on the same or next line of code from the same source).
@@ -228,8 +257,10 @@ trap _bbdb_exit EXIT
 if [ -z "$_bbdb_opt_watch" ]; then
   trap _bbdb_debug DEBUG
 else
+  # ${!name:-} keeps -w working under 'set -u' in the traced program: the
+  # variable is read here before its first assignment has executed.
   trap 'if [[ "$BASH_COMMAND" =~ ^([_a-zA-Z][_a-zA-Z0-9]*)= ]]; then
-          _bbdb_debug "${BASH_REMATCH[1]}" "${!BASH_REMATCH[1]}"
+          _bbdb_debug "${BASH_REMATCH[1]}" "${!BASH_REMATCH[1]:-}"
         else
           _bbdb_debug
         fi' DEBUG
