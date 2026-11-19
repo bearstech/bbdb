@@ -117,7 +117,7 @@ _bbdb_print() {
   fi
   # Enforce width, truncate if necessary
   if [ "$_bbdb_opt_width" -lt ${#src} ]; then
-    src="…${src:1-_bbdb_opt_width}"
+    src="...${src:1-_bbdb_opt_width}"
   fi
 
   printf "!$prefix%-$((_bbdb_opt_width+5))s$fmt\n" "${args[@]}" "$src:$lno" "$@" >&99
